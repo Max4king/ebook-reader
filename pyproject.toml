@@ -1,0 +1,11 @@
+[project]
+name = "ebook-reader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "google-genai>=1.55.0",
+    "python-dotenv>=1.2.1",
+    "streamlit>=1.52.1",
+]

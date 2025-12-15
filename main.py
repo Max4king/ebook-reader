@@ -1,103 +1,162 @@
-import argparse
-import base64
-import sys
+import streamlit as st
+import subprocess
+import os
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-# 1. SETUP: Paste your API key here
-# (Or better, set it as an environment variable: export GOOGLE_API_KEY='your_key')
-API_KEY = "AIzaSyCTF1hgun1lsIfGo3A0TqKP__IHLFh4VSA"
+# --- CONFIGURATION ---
+load_dotenv()
+api_key = os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
 
-def generate_thai_audio(text_to_speak, filename="output_thai.wav"):
-    """
-    Uses Gemini 2.5 Pro to generate native audio from text.
-    """
-    client = genai.Client(api_key=API_KEY)
-
-    # 2. PROMPT: Instruct the model to speak in Thai
-    # We ask it to act as a native speaker to ensure correct tone/prosody.
-    prompt = f"""
-    Please read the following Thai text aloud. 
-    Speak naturally, clearly, and with a polite tone suitable for a native Thai speaker.
-    
-    Text to read: "{text_to_speak}"
-    """
-
-    print(f"Generating audio for: {text_to_speak}...")
-
+def extract_text_from_pdf_bytes(file_bytes):
+    """Extract raw text from PDF using pdftotext."""
     try:
-        # 3. CALL API with AUDIO modality
-        # We request 'AUDIO' in response_modalities to get direct speech.
+        result = subprocess.run(
+            ['pdftotext', '-layout', '-', '-'],
+            input=file_bytes,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except Exception as e:
+        st.error(f"Error extracting PDF: {e}")
+        return None
+
+def clean_text_with_gemini(raw_text, model_name="gemini-2.5-flash"):
+    """
+    Uses Gemini to remove headers/footers.
+    We generally default to Flash for this because it's cheap and text-only.
+    """
+    prompt = """
+    You are an expert ebook formatter. 
+    1. Remove page numbers, headers, footers, and copyright notices.
+    2. Join hyphenated words split across lines.
+    3. Return ONLY the clean text. Do not summarize.
+    
+    Text to clean:
+    """
+    try:
         response = client.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=prompt,
+            model=model_name, 
+            contents=prompt + raw_text[:30000] 
+        )
+        return response.text
+    except Exception as e:
+        st.error(f"Cleaning Error: {e}")
+        return raw_text
+
+def generate_gemini_tts(text, model_name, voice_name):
+    """
+    Generates audio using the selected Gemini 2.5 model.
+    """
+    try:
+        response = client.models.generate_content(
+            model=model_name, 
+            contents=text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            # Options often include 'Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'
-                            # 'Aoede' is usually good for formal/polite tones.
-                            voice_name="Aoede" 
+                            voice_name=voice_name
                         )
                     )
                 )
             )
         )
-
-        # 4. SAVE THE AUDIO
-        # The audio data comes back as base64 encoded bytes in the response parts
+        
+        # Concatenate audio parts
+        audio_data = b""
         for part in response.candidates[0].content.parts:
             if part.inline_data:
-                audio_bytes = base64.b64decode(part.inline_data.data)
-                with open(filename, "wb") as f:
-                    f.write(audio_bytes)
-                print(f"✅ Success! Audio saved to '{filename}'")
-                return
-
-        print("⚠️ No audio data found in response.")
-
+                audio_data += part.inline_data.data
+        return audio_data
+        
     except Exception as e:
-        print(f"❌ Error: {e}")
+        st.error(f"TTS Error: {e}")
+        return None
 
-def read_text_file(file_path):
-    """
-    Read text content from a file.
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        print(f"❌ Error: File '{file_path}' not found.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error reading file '{file_path}': {e}")
-        sys.exit(1)
+# --- UI LAYOUT ---
+st.set_page_config(page_title="Gemini 2.5 Ebook Narrator", layout="wide")
 
-# --- USAGE ---
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Generate Thai audio from text file using Gemini 2.5 Pro"
-    )
-    parser.add_argument(
-        "input_file",
-        help="Path to text file containing Thai text to convert to speech"
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="output_thai.wav",
-        help="Output audio filename (default: output_thai.wav)"
-    )
+st.sidebar.title("⚙️ Settings")
 
-    args = parser.parse_args()
+# 1. Model Selector
+model_choice = st.sidebar.selectbox(
+    "Choose AI Model",
+    ("gemini-2.5-flash", "gemini-2.5-pro"),
+    index=0,
+    help="Flash is faster & cheaper. Pro has better emotional range."
+)
 
-    # Read text from file
-    thai_text = read_text_file(args.input_file)
+# 2. Voice Selector
+voice_choice = st.sidebar.selectbox(
+    "Choose Voice",
+    ("Aoede", "Puck", "Charon", "Kore", "Fenrir"),
+    index=0
+)
 
-    if not thai_text:
-        print("❌ Error: Input file is empty.")
-        sys.exit(1)
+st.title(f"📖 Ebook Narrator ({model_choice})")
 
-    print(f"Read text from '{args.input_file}': {thai_text[:50]}{'...' if len(thai_text) > 50 else ''}")
+if not api_key:
+    st.warning("⚠️ GEMINI_API_KEY not found. Please set it in your environment.")
 
-    generate_thai_audio(thai_text, args.output)
+uploaded_file = st.file_uploader("Upload PDF or TXT", type=['pdf', 'txt'])
+
+if uploaded_file and api_key:
+    # --- STEP 1: EXTRACT ---
+    with st.spinner("Extracting text..."):
+        if uploaded_file.type == "application/pdf":
+            raw_text = extract_text_from_pdf_bytes(uploaded_file.getvalue())
+        else:
+            raw_text = uploaded_file.getvalue().decode("utf-8")
+
+    if raw_text:
+        # Layout: Left for Text, Right for Audio
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.subheader("1. Text Processing")
+            with st.expander("Show Raw Text", expanded=False):
+                st.text_area("Raw", raw_text[:2000], height=150)
+
+            # Clean Text Button
+            if st.button("Clean Text (Remove Headers/Footers)"):
+                with st.spinner("Cleaning text with Gemini Flash..."):
+                    # We always use Flash for cleaning to save money, 
+                    # unless you want Pro to do the cleaning too.
+                    clean_text = clean_text_with_gemini(raw_text[:10000])
+                    st.session_state['clean_text'] = clean_text
+                    st.rerun()
+
+        # --- STEP 2: GENERATE ---
+        with col2:
+            st.subheader("2. Audio Generation")
+            
+            if 'clean_text' in st.session_state:
+                st.text_area("Cleaned Text", st.session_state['clean_text'], height=300)
+                
+                st.write(f"**Selected Model:** `{model_choice}`")
+                
+                if st.button("Generate Audio"):
+                    with st.spinner(f"Synthesizing audio using {model_choice}..."):
+                        audio_bytes = generate_gemini_tts(
+                            st.session_state['clean_text'], 
+                            model_choice,
+                            voice_choice
+                        )
+                        
+                        if audio_bytes:
+                            st.success("Audio Generated!")
+                            st.audio(audio_bytes, format='audio/wav')
+                            st.download_button(
+                                "Download WAV", 
+                                audio_bytes, 
+                                "audiobook.wav", 
+                                "audio/wav"
+                            )
+            else:
+                st.info("👈 Please clean the text first.")
