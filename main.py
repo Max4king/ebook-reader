@@ -11,6 +11,18 @@ load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
 
+VOICE_MAP = {
+    "Puck": "Male - Upbeat & Energetic",
+    "Charon": "Male - Deep & Authoritative",
+    "Fenrir": "Male - Friendly & Excitable",
+    "Aoede": "Female - Sophisticated & Articulate",
+    "Kore": "Female - Calm & Professional",
+    "Zephyr": "Female - Bright & Youthful",
+    "Orus": "Male - Mature & Resonant",
+    "Leda": "Female - Composed & Authoritative",
+    "Enceladus": "Male - Soft & Breathy",
+}
+
 
 def extract_text_from_pdf_bytes(file_bytes):
     """Extract raw text from PDF using pdftotext."""
@@ -51,14 +63,29 @@ def clean_text_with_gemini(raw_text, model_name="gemini-2.5-flash"):
         return raw_text
 
 
-def generate_gemini_tts(text, model_name, voice_name):
+def generate_gemini_tts(text, model_name, voice_name, voice_direction=None):
     """
     Generates audio using the selected Gemini 2.5 model.
+
+    Args:
+        text: The text to convert to speech
+        model_name: The Gemini model to use
+        voice_name: The voice persona to use
+        voice_direction: Optional instruction for how the voice should sound
     """
+    # Default prompt if none provided
+    default_prompt = "Read this text in a natural, engaging voice suitable for an audiobook. Speak clearly and at a comfortable pace."
+
+    # Combine text with voice direction
+    if voice_direction and voice_direction.strip():
+        full_content = f"{voice_direction.strip()}\n\n{text}"
+    else:
+        full_content = f"{default_prompt}\n\n{text}"
+
     try:
         response = client.models.generate_content(
             model=model_name,
-            contents=text,
+            contents=full_content,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
@@ -103,9 +130,19 @@ model_choice = st.sidebar.selectbox(
 
 # 2. Voice Selector
 voice_choice = st.sidebar.selectbox(
-    "Choose Voice", ("Aoede", "Puck", "Charon", "Kore", "Fenrir"), index=0
+    "Choose Voice Persona",
+    options=list(VOICE_MAP.keys()),
+    format_func=lambda x: f"{x} ({VOICE_MAP[x]})",
+    index=0,
 )
 
+# 3. Voice Direction Input
+voice_direction = st.sidebar.text_area(
+    "Voice Direction (Optional)",
+    placeholder="Describe how you want the voice to sound. Example: 'Speak in a calm, soothing tone perfect for bedtime stories' or 'Read with excitement and enthusiasm for this adventure story.'",
+    height=100,
+    help="Provide specific instructions for the voice style. If left empty, a default audiobook-appropriate prompt will be used."
+)
 st.title(f"📖 Ebook Narrator ({model_choice})")
 
 if not api_key:
@@ -151,7 +188,7 @@ if uploaded_file and api_key:
                 if st.button("Generate Audio"):
                     with st.spinner(f"Synthesizing audio using {model_choice}..."):
                         audio_bytes = generate_gemini_tts(
-                            st.session_state["clean_text"], model_choice, voice_choice
+                            st.session_state["clean_text"], model_choice, voice_choice, voice_direction
                         )
 
                         if audio_bytes:
