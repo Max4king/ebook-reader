@@ -1,5 +1,6 @@
 import os
 import subprocess
+import logging
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -8,8 +9,25 @@ from google.genai import types
 
 # --- CONFIGURATION ---
 load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ebook_reader.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 api_key = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
+if api_key:
+    logger.info("API key loaded successfully from environment")
+    client = genai.Client(api_key=api_key)
+else:
+    logger.error("Failed to load GEMINI_API_KEY from environment")
+    client = None
 
 VOICE_MAP = {
     "Puck": "Male - Upbeat & Energetic",
@@ -26,7 +44,9 @@ VOICE_MAP = {
 
 def extract_text_from_pdf_bytes(file_bytes):
     """Extract raw text from PDF using pdftotext."""
+    logger.info("Starting PDF text extraction using pdftotext")
     try:
+        logger.info(f"Running pdftotext command with {len(file_bytes)} bytes of input")
         result = subprocess.run(
             ["pdftotext", "-layout", "-", "-"],
             input=file_bytes,
@@ -34,8 +54,11 @@ def extract_text_from_pdf_bytes(file_bytes):
             text=True,
             check=True,
         )
+        extracted_length = len(result.stdout)
+        logger.info(f"PDF text extraction completed successfully. Extracted {extracted_length} characters")
         return result.stdout
     except Exception as e:
+        logger.error(f"PDF text extraction failed: {e}")
         st.error(f"Error extracting PDF: {e}")
         return None
 
@@ -45,20 +68,26 @@ def clean_text_with_gemini(raw_text, model_name="gemini-2.5-flash"):
     Uses Gemini to remove headers/footers.
     We generally default to Flash for this because it's cheap and text-only.
     """
+    logger.info(f"Starting text cleaning with Gemini model: {model_name}")
     prompt = """
-    You are an expert ebook formatter. 
+    You are an expert ebook formatter.
     1. Remove page numbers, headers, footers, and copyright notices.
     2. Join hyphenated words split across lines.
     3. Return ONLY the clean text. Do not summarize.
-    
+
     Text to clean:
     """
     try:
+        input_length = len(raw_text[:30000])
+        logger.info(f"Calling Gemini API for text cleaning. Input length: {input_length} characters")
         response = client.models.generate_content(
             model=model_name, contents=prompt + raw_text[:30000]
         )
+        cleaned_length = len(response.text)
+        logger.info(f"Text cleaning completed successfully. Output length: {cleaned_length} characters")
         return response.text
     except Exception as e:
+        logger.error(f"Text cleaning failed with error: {e}")
         st.error(f"Cleaning Error: {e}")
         return raw_text
 
@@ -73,16 +102,22 @@ def generate_gemini_tts(text, model_name, voice_name, voice_direction=None):
         voice_name: The voice persona to use
         voice_direction: Optional instruction for how the voice should sound
     """
+    logger.info(f"Starting TTS generation with model: {model_name}, voice: {voice_name}")
+
     # Default prompt if none provided
     default_prompt = "Read this text in a natural, engaging voice suitable for an audiobook. Speak clearly and at a comfortable pace."
 
     # Combine text with voice direction
     if voice_direction and voice_direction.strip():
         full_content = f"{voice_direction.strip()}\n\n{text}"
+        logger.info(f"Using custom voice direction: {voice_direction[:100]}...")
     else:
         full_content = f"{default_prompt}\n\n{text}"
+        logger.info("Using default voice direction prompt")
 
     try:
+        text_length = len(text)
+        logger.info(f"Calling Gemini TTS API. Text length: {text_length} characters")
         response = client.models.generate_content(
             model=model_name,
             contents=full_content,
@@ -108,9 +143,13 @@ def generate_gemini_tts(text, model_name, voice_name, voice_direction=None):
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.data:
                     audio_data += part.inline_data.data
+
+        audio_size = len(audio_data)
+        logger.info(f"TTS generation completed successfully. Audio size: {audio_size} bytes")
         return audio_data
 
     except Exception as e:
+        logger.error(f"TTS generation failed with error: {e}")
         st.error(f"TTS Error: {e}")
         return None
 
@@ -146,19 +185,26 @@ voice_direction = st.sidebar.text_area(
 st.title(f"📖 Ebook Narrator ({model_choice})")
 
 if not api_key:
+    logger.warning("GEMINI_API_KEY not found in environment")
     st.warning("⚠️ GEMINI_API_KEY not found. Please set it in your environment.")
 
+logger.info("Application started - waiting for file upload")
 uploaded_file = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
 
 if uploaded_file and api_key:
+    logger.info(f"Starting processing for uploaded file: {uploaded_file.name}, type: {uploaded_file.type}")
     # --- STEP 1: EXTRACT ---
     with st.spinner("Extracting text..."):
         if uploaded_file.type == "application/pdf":
+            logger.info("Processing PDF file for text extraction")
             raw_text = extract_text_from_pdf_bytes(uploaded_file.getvalue())
         else:
+            logger.info("Processing TXT file for text extraction")
             raw_text = uploaded_file.getvalue().decode("utf-8")
+            logger.info(f"TXT file decoded successfully. Text length: {len(raw_text)} characters")
 
     if raw_text:
+        logger.info(f"Text extraction completed successfully. Raw text length: {len(raw_text)} characters")
         # Layout: Left for Text, Right for Audio
         col1, col2 = st.columns([1, 1])
 
@@ -169,11 +215,13 @@ if uploaded_file and api_key:
 
             # Clean Text Button
             if st.button("Clean Text (Remove Headers/Footers)"):
+                logger.info("User clicked 'Clean Text' button")
                 with st.spinner("Cleaning text with Gemini Flash..."):
                     # We always use Flash for cleaning to save money,
                     # unless you want Pro to do the cleaning too.
                     clean_text = clean_text_with_gemini(raw_text[:10000])
                     st.session_state["clean_text"] = clean_text
+                    logger.info("Text cleaning completed and stored in session state")
                     st.rerun()
 
         # --- STEP 2: GENERATE ---
@@ -186,6 +234,7 @@ if uploaded_file and api_key:
                 st.write(f"**Selected Model:** `{model_choice}`")
 
                 if st.button("Generate Audio"):
+                    logger.info(f"User clicked 'Generate Audio' button with model: {model_choice}, voice: {voice_choice}")
                     with st.spinner(f"Synthesizing audio using {model_choice}..."):
                         audio_bytes = generate_gemini_tts(
                             st.session_state["clean_text"], model_choice, voice_choice, voice_direction
@@ -200,5 +249,8 @@ if uploaded_file and api_key:
                                 "audiobook.wav",
                                 "audio/wav",
                             )
+                            logger.info("Audio generated successfully and provided to user for download")
+                        else:
+                            logger.error("Audio generation failed - no audio data returned")
             else:
                 st.info("👈 Please clean the text first.")
