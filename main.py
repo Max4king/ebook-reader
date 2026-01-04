@@ -130,7 +130,7 @@ def extract_text_from_pdf_bytes(file_bytes):
     try:
         logger.info(f"Running pdftotext command with {len(file_bytes)} bytes of input")
         result = subprocess.run(
-            ["pdftotext", "-layout", "-", "-"],
+            ["pdftotext", "-", "-"],
             input=file_bytes,
             capture_output=True,
             check=True,
@@ -444,6 +444,7 @@ if uploaded_file and api_key:
         # Clear previous state when a new file is uploaded
         st.session_state["current_file_hash"] = file_hash
         st.session_state.pop("clean_text", None)
+        st.session_state.pop("translated_text", None)
         st.session_state.pop("translated_language", None)
 
     logger.info(
@@ -511,56 +512,77 @@ if uploaded_file and api_key:
             st.subheader("2. Audio Generation")
 
             if "clean_text" in st.session_state:
-                # Show translated language indicator
-                text_label = "Cleaned Text"
-                if "translated_language" in st.session_state:
-                    text_label = f"Text ({st.session_state['translated_language']})"
-
-                st.caption(
-                    f"{text_label}: {len(st.session_state['clean_text']):,} characters"
-                )
-                st.text_area(
-                    "Processed Text",
+                # Always show cleaned text
+                st.caption(f"Cleaned Text: {len(st.session_state['clean_text']):,} characters")
+                cleaned_text_area = st.text_area(
+                    "Cleaned Text",
                     st.session_state["clean_text"],
-                    height=400,
-                    label_visibility="collapsed",
+                    height=200,
+                    label_visibility="visible",
                 )
 
                 st.write(f"**Selected Model:** `{model_choice}`")
 
                 # Translate Text Button (moved here since text should be cleaned first)
-                if "translated_language" not in st.session_state:
-                    if st.button(f"Translate to {target_language}"):
-                        text_len = len(st.session_state["clean_text"])
-                        logger.info(
-                            f"User clicked 'Translate' button for {target_language}"
+                if st.button(f"Translate to {target_language}"):
+                    text_len = len(st.session_state["clean_text"])
+                    logger.info(
+                        f"User clicked 'Translate' button for {target_language}"
+                    )
+                    st.info(
+                        f"Translating {text_len:,} characters using {translation_model}..."
+                    )
+                    with st.spinner(f"Translating text to {target_language}..."):
+                        translated_text = translate_text_with_gemini(
+                            st.session_state["clean_text"],
+                            target_language,
+                            translation_model,
                         )
-                        st.info(
-                            f"Translating {text_len:,} characters using {translation_model}..."
-                        )
-                        with st.spinner(f"Translating text to {target_language}..."):
-                            translated_text = translate_text_with_gemini(
-                                st.session_state["clean_text"],
-                                target_language,
-                                translation_model,
+                        if translated_text:
+                            st.session_state["translated_text"] = translated_text
+                            st.session_state["translated_language"] = target_language
+                            logger.info(
+                                "Text translation completed and stored in session state"
                             )
-                            if translated_text:
-                                st.session_state["clean_text"] = translated_text
-                                st.session_state["translated_language"] = (
-                                    target_language
-                                )
-                                logger.info(
-                                    "Text translation completed and stored in session state"
-                                )
-                                st.rerun()
+                            st.rerun()
+
+                # Show translated text if available
+                if "translated_text" in st.session_state:
+                    st.divider()
+                    st.caption(
+                        f"Translated Text ({st.session_state['translated_language']}): {len(st.session_state['translated_text']):,} characters"
+                    )
+                    translated_text_area = st.text_area(
+                        f"Translated Text ({st.session_state['translated_language']})",
+                        st.session_state["translated_text"],
+                        height=200,
+                        label_visibility="visible",
+                    )
+
+                    # Download button for translated text
+                    st.download_button(
+                        f"Download Translated Text ({st.session_state['translated_language']})",
+                        st.session_state["translated_text"],
+                        f"translated_text_{st.session_state['translated_language'].lower()}.txt",
+                        "text/plain",
+                    )
 
                 if st.button("Generate Audio"):
+                    # Use translated text if available, otherwise use cleaned text
+                    text_for_audio = st.session_state.get(
+                        "translated_text", st.session_state["clean_text"]
+                    )
+                    audio_source_label = (
+                        f" ({st.session_state['translated_language']})"
+                        if "translated_text" in st.session_state
+                        else " (Cleaned)"
+                    )
                     logger.info(
                         f"User clicked 'Generate Audio' button with model: {model_choice}, voice: {voice_choice}"
                     )
-                    with st.spinner(f"Synthesizing audio using {model_choice}..."):
+                    with st.spinner(f"Synthesizing audio using {model_choice}{audio_source_label}..."):
                         audio_bytes = generate_gemini_tts(
-                            st.session_state["clean_text"],
+                            text_for_audio,
                             model_choice,
                             voice_choice,
                             voice_direction,
