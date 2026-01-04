@@ -8,4 +8,5 @@ dependencies = [
     "google-genai>=1.55.0",
     "python-dotenv>=1.2.1",
     "streamlit>=1.52.1",
+    "whisperx>=3.7.4",
 ]
