@@ -60,6 +60,10 @@ WHISPER_MODELS = (
     "tiny",
 )
 
+# Whisper transcription options
+INCLUDE_TIMESTAMPS = True  # Include timestamps in transcript by default
+INCLUDE_SPEAKER_LABELS = False  # Include speaker labels in transcript by default (requires diarization)
+
 # Folder paths
 DOWNLOADS_DIR = "downloads"
 TRANSCRIPTS_DIR = "transcripts"

@@ -21,11 +21,27 @@ from services.gemini_service import (
     generate_gemini_tts,
     translate_text_with_gemini,
 )
-from services.whisper_service import transcribe_audio
-from services.youtube_service import download_youtube_video, get_video_info
+from services.whisper_service import transcribe_audio, check_existing_transcript
+from services.youtube_service import download_youtube_video, get_video_info, extract_video_id, check_existing_download, get_title_from_filename
 from utils.text_processing import extract_text_from_pdf_bytes
 
-logger = logging.getLogger(__name__)
+
+# Progress stage definitions for the checklist
+DOWNLOAD_STAGES = {
+    'checking_cache': '🔍 Checking cache...',
+    'downloading': '📥 Downloading video...',
+    'extracting_audio': '🎵 Extracting audio...',
+    'done': '✅ Download complete',
+}
+
+TRANSCRIBE_STAGES = {
+    'checking_cache': '🔍 Checking transcript cache...',
+    'loading_model': '🧠 Loading Whisper model...',
+    'loading_audio': '🔊 Loading audio file...',
+    'transcribing': '📝 Transcribing audio...',
+    'saving': '💾 Saving transcript...',
+    'done': '✅ Transcription complete',
+}
 
 
 def render_sidebar():
@@ -215,6 +231,33 @@ def render_audio_generation_column(
         st.info("👈 Please clean the text first.")
 
 
+def render_progress_checklist(stages: dict, current_stage: str, progress: float) -> None:
+    """
+    Render a progress checklist showing the current stage of processing.
+    
+    Args:
+        stages: Dictionary mapping stage keys to display labels
+        current_stage: The current stage key
+        progress: Progress value from 0.0 to 1.0
+    """
+    stage_keys = list(stages.keys())
+    current_idx = stage_keys.index(current_stage) if current_stage in stage_keys else 0
+    
+    for i, (stage_key, stage_label) in enumerate(stages.items()):
+        if i < current_idx:
+            # Completed stages
+            st.markdown(f"✅ ~~{stage_label.split(' ', 1)[1]}~~")
+        elif i == current_idx:
+            # Current stage - show with progress
+            if stage_key == 'done':
+                st.markdown(f"✅ **{stage_label.split(' ', 1)[1]}**")
+            else:
+                st.markdown(f"⏳ **{stage_label}** ({int(progress * 100)}%)")
+        else:
+            # Future stages
+            st.markdown(f"⬜ {stage_label.split(' ', 1)[1]}")
+
+
 def render_youtube_downloader_tab():
     """Render the YouTube downloader tab."""
     st.subheader("YouTube Video Downloader & Transcriber")
@@ -248,6 +291,22 @@ def render_youtube_downloader_tab():
             help="Compute type for transcription. float16 is recommended for GPU.",
         )
 
+    # Transcription formatting options
+    st.subheader("Transcription Options")
+    col3, col4 = st.columns([1, 1])
+    with col3:
+        include_timestamps = st.checkbox(
+            "Include Timestamps",
+            value=False,
+            help="Add timestamps for each audio segment in the transcript (e.g., [00:01:23.456 --> 00:01:28.789]).",
+        )
+    with col4:
+        include_speaker_labels = st.checkbox(
+            "Include Speaker Labels",
+            value=False,
+            help="Add speaker labels to the transcript (requires diarization, may increase processing time).",
+        )
+
     # Initialize session state for YouTube
     if "yt_video_path" not in st.session_state:
         st.session_state["yt_video_path"] = None
@@ -257,49 +316,105 @@ def render_youtube_downloader_tab():
         st.session_state["yt_transcript"] = None
     if "yt_transcript_path" not in st.session_state:
         st.session_state["yt_transcript_path"] = None
+    if "yt_progress_stage" not in st.session_state:
+        st.session_state["yt_progress_stage"] = None
+    if "yt_progress_value" not in st.session_state:
+        st.session_state["yt_progress_value"] = 0.0
+
+    # Check cache status before showing button
+    video_id = extract_video_id(youtube_url)
+    existing_video, existing_audio = check_existing_download(video_id) if video_id else (None, None)
+    existing_transcript, _ = check_existing_transcript(existing_audio) if existing_audio else (None, None)
+    
+    # Show cache status
+    if video_id:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if existing_video and existing_audio:
+                st.success("✅ Video cached")
+            else:
+                st.info("📥 Video not cached")
+        with col2:
+            if existing_transcript:
+                st.success("✅ Transcript cached")
+            else:
+                st.info("📝 Transcript not cached")
+        with col3:
+            st.caption(f"Video ID: `{video_id}`")
 
     # Download and transcribe button
     if st.button("Download and Transcribe"):
         logger.info(f"User clicked download button for URL: {youtube_url}")
         
-        # Check if video is already cached
-        from services.youtube_service import extract_video_id, check_existing_download
-        video_id = extract_video_id(youtube_url)
-        existing_video, existing_audio = check_existing_download(video_id) if video_id else (None, None)
+        # Progress container
+        progress_container = st.container()
+        status_text = st.empty()
+        progress_bar = st.progress(0)
+        checklist_container = st.empty()
+        
+        def update_progress(phase: str, stage: str, progress: float):
+            """Update progress display."""
+            st.session_state["yt_progress_stage"] = stage
+            st.session_state["yt_progress_value"] = progress
+            progress_bar.progress(progress)
+            
+            if phase == 'download':
+                status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
+            else:
+                status_text.markdown(f"**{TRANSCRIBE_STAGES.get(stage, stage)}**")
+        
+        # Download phase
+        update_progress('download', 'checking_cache', 0.0)
         
         if existing_video and existing_audio:
-            st.info(f"Using cached download (Video ID: {video_id})")
+            status_text.info(f"Using cached download (Video ID: {video_id})")
+            video_path, audio_path = existing_video, existing_audio
+            update_progress('download', 'done', 0.3)
         else:
-            st.info(f"Downloading video from: {youtube_url}")
+            status_text.info(f"Downloading video from: {youtube_url}")
+            
+            # Download with progress callback
+            def download_callback(stage, prog):
+                # Map download progress to 0-30%
+                mapped_prog = prog * 0.3
+                update_progress('download', stage, mapped_prog)
+            
+            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback)
 
-        with st.spinner("Downloading video and extracting audio..." if not (existing_video and existing_audio) else "Loading cached files..."):
-            video_path, audio_path = download_youtube_video(youtube_url)
+        if video_path and audio_path:
+            st.session_state["yt_video_path"] = video_path
+            st.session_state["yt_audio_path"] = audio_path
+            
+            # Show video info - extract title from cached filename to avoid network request
+            title = get_title_from_filename(video_path)
+            if title:
+                st.caption(f"Title: {title}")
 
-            if video_path and audio_path:
-                st.session_state["yt_video_path"] = video_path
-                st.session_state["yt_audio_path"] = audio_path
-                st.success(f"Downloaded: `{Path(audio_path).name}`")
+            # Transcription phase
+            logger.info(f"Starting transcription with model: {whisper_model}")
+            
+            def transcribe_callback(stage, prog):
+                # Map transcription progress to 30-100%
+                mapped_prog = 0.3 + (prog * 0.7)
+                update_progress('transcribe', stage, mapped_prog)
+            
+            transcript, transcript_path = transcribe_audio(
+                audio_path, whisper_model, compute_type=compute_type,
+                progress_callback=transcribe_callback,
+                include_timestamps=include_timestamps,
+                include_speaker_labels=include_speaker_labels
+            )
 
-                # Show video info
-                video_info = get_video_info(youtube_url)
-                if video_info:
-                    st.caption(f"Title: {video_info.get('title', 'Unknown')}")
-
-                logger.info(f"Starting transcription with model: {whisper_model}")
-                with st.spinner(f"Transcribing audio using {whisper_model}..."):
-                    transcript, transcript_path = transcribe_audio(
-                        audio_path, whisper_model, compute_type=compute_type
-                    )
-
-                    if transcript:
-                        st.session_state["yt_transcript"] = transcript
-                        st.session_state["yt_transcript_path"] = transcript_path
-                        st.success("Transcription completed!")
-                        st.rerun()
-                    else:
-                        st.error("Transcription failed. Check the logs for details.")
+            if transcript:
+                st.session_state["yt_transcript"] = transcript
+                st.session_state["yt_transcript_path"] = transcript_path
+                progress_bar.progress(1.0)
+                status_text.success("✅ Transcription completed!")
+                st.rerun()
             else:
-                st.error("Failed to download video. Please check the URL and try again.")
+                st.error("Transcription failed. Check the logs for details.")
+        else:
+            st.error("Failed to download video. Please check the URL and try again.")
 
     # Show results
     if st.session_state.get("yt_transcript"):

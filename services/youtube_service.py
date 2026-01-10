@@ -4,10 +4,11 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Callable
 
 import yt_dlp
 
-from config import DOWNLOADS_DIR, logger
+from config import DOWNLOADS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +57,36 @@ def check_existing_download(video_id: str, output_dir: str = DOWNLOADS_DIR) -> t
     video_path = None
     audio_path = None
     
-    # Search for video and audio files
+    # Search for video and audio files - prefer files without format codes (f140, f401, etc.)
+    video_candidates = []
+    audio_candidates = []
+    
     for file in output_path.iterdir():
         if file.is_file() and video_id in file.name:
-            if file.suffix == '.mp4' or file.suffix == '.webm':
-                video_path = str(file)
-            elif file.suffix == '.mp4' or file.suffix == '.mp3':
-                audio_path = str(file)
+            # Check if this is a format-specific intermediate file (e.g., .f140.m4a, .f401.mp4)
+            # These have format codes before the extension
+            name_parts = file.stem.split('.')
+            is_intermediate = len(name_parts) > 1 and name_parts[-1].startswith('f') and name_parts[-1][1:].isdigit()
+            
+            if file.suffix in ('.mp4', '.webm', '.mkv'):
+                video_candidates.append((str(file), is_intermediate))
+            elif file.suffix in ('.m4a', '.mp3', '.opus', '.wav'):
+                audio_candidates.append((str(file), is_intermediate))
+    
+    # Prefer non-intermediate files (final merged files)
+    for path, is_intermediate in video_candidates:
+        if not is_intermediate:
+            video_path = path
+            break
+    if not video_path and video_candidates:
+        video_path = video_candidates[0][0]  # Fallback to any video file
+    
+    for path, is_intermediate in audio_candidates:
+        if not is_intermediate:
+            audio_path = path
+            break
+    if not audio_path and audio_candidates:
+        audio_path = audio_candidates[0][0]  # Fallback to any audio file
     
     # Only return if both files are found
     if video_path and audio_path:
@@ -74,7 +98,35 @@ def check_existing_download(video_id: str, output_dir: str = DOWNLOADS_DIR) -> t
     return None, None
 
 
-def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[str | None, str | None]:
+def cleanup_intermediate_files(video_id: str, output_dir: str = DOWNLOADS_DIR) -> None:
+    """
+    Remove intermediate format-specific files (e.g., .f140.m4a, .f401.mp4).
+    
+    Args:
+        video_id: YouTube video ID
+        output_dir: Directory where downloads are stored
+    """
+    output_path = Path(output_dir)
+    if not output_path.exists():
+        return
+    
+    for file in output_path.iterdir():
+        if file.is_file() and video_id in file.name:
+            # Check if this is a format-specific intermediate file
+            name_parts = file.stem.split('.')
+            if len(name_parts) > 1 and name_parts[-1].startswith('f') and name_parts[-1][1:].isdigit():
+                logger.info(f"Removing intermediate file: {file.name}")
+                try:
+                    file.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to remove intermediate file {file.name}: {e}")
+
+
+def download_youtube_video(
+    url: str, 
+    output_dir: str = DOWNLOADS_DIR,
+    progress_callback: Callable[[str, float], None] | None = None,
+) -> tuple[str | None, str | None]:
     """
     Download a YouTube video and extract audio using yt-dlp.
     Checks for existing downloads first to avoid re-downloading.
@@ -82,6 +134,9 @@ def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[s
     Args:
         url: YouTube video URL
         output_dir: Directory to save downloaded files
+        progress_callback: Optional callback(stage, progress) for progress updates.
+                          Stage is one of: 'checking_cache', 'downloading', 'extracting_audio', 'done'
+                          Progress is a float from 0.0 to 1.0
 
     Returns:
         Tuple of (video_path, audio_path) or (None, None) if failed
@@ -89,13 +144,21 @@ def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[s
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
     
+    if progress_callback:
+        progress_callback('checking_cache', 0.0)
+    
     # Check if video is already downloaded
     video_id = extract_video_id(url)
     if video_id:
         existing_video, existing_audio = check_existing_download(video_id, output_dir)
         if existing_video and existing_audio:
             logger.info(f"Using cached download for video ID: {video_id}")
+            if progress_callback:
+                progress_callback('done', 1.0)
             return existing_video, existing_audio
+
+    if progress_callback:
+        progress_callback('downloading', 0.1)
 
     # Get video title for filename (include video ID for easier identification)
     template = os.path.join(output_dir, "%(title)s-%(id)s.%(ext)s")
@@ -106,29 +169,60 @@ def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[s
     video_path = None
     audio_path = None
     
+    # Progress hook for yt-dlp
+    def yt_progress_hook(d):
+        if progress_callback and d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            downloaded = d.get('downloaded_bytes', 0)
+            if total > 0:
+                # Map download progress to 0.1 - 0.7 range
+                pct = 0.1 + (downloaded / total) * 0.6
+                progress_callback('downloading', pct)
+        elif progress_callback and d['status'] == 'finished':
+            progress_callback('extracting_audio', 0.8)
+    
     try:
-        # Download video with embedded audio
+        # Download video with embedded audio using merge format to avoid multiple files
+        # Use a single format that already has audio+video, or download best and merge
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            # Use mp4 format with audio included, or merge best video+audio into mp4
+            'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
             'outtmpl': template,
-            'quiet': False,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [yt_progress_hook],
+            # Merge into single mp4 file
+            'merge_output_format': 'mp4',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp4',
+                'preferredcodec': 'm4a',
             }],
             # Keep the video file after extracting audio
             'keepvideo': True,
+            # Clean up intermediate files
+            'postprocessor_args': {
+                'FFmpegExtractAudio': ['-ar', '16000'],  # Optimal for Whisper
+            },
         }
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            # The filename after merging should be .mp4
             video_filename = ydl.prepare_filename(info)
-            video_path = video_filename
-            # Audio path will be the same filename with .mp4 extension
-            audio_path = str(Path(video_filename).with_suffix('.mp4'))
+            # Ensure we're looking for .mp4 file
+            video_path = str(Path(video_filename).with_suffix('.mp4'))
+            # Audio path will be the same filename with .m4a extension
+            audio_path = str(Path(video_filename).with_suffix('.m4a'))
             
             logger.info(f"Video downloaded to: {video_path}")
             logger.info(f"Audio extracted to: {audio_path}")
+        
+        # Clean up any intermediate format-specific files
+        if video_id:
+            cleanup_intermediate_files(video_id, output_dir)
+
+        if progress_callback:
+            progress_callback('done', 1.0)
 
         # Verify both files exist
         if video_path and os.path.exists(video_path) and audio_path and os.path.exists(audio_path):
@@ -140,6 +234,31 @@ def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[s
     except Exception as e:
         logger.error(f"Error downloading video: {e}")
         return None, None
+
+
+def get_title_from_filename(video_path: str) -> str | None:
+    """
+    Extract video title from the cached video filename.
+    Filename format: {title}-{video_id}.{ext}
+
+    Args:
+        video_path: Path to the video file
+
+    Returns:
+        Video title or None if failed
+    """
+    try:
+        filename = Path(video_path).stem  # Get filename without extension
+        # Find the last occurrence of a dash followed by an 11-character video ID
+        # Video IDs are always 11 characters: alphanumeric, dash, or underscore
+        parts = filename.rsplit('-', 1)
+        if len(parts) == 2 and len(parts[1]) == 11:
+            title = parts[0]
+            return title
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting title from filename: {e}")
+        return None
 
 
 def get_video_info(url: str) -> dict | None:
