@@ -3,8 +3,9 @@
 import logging
 import os
 import re
-import subprocess
 from pathlib import Path
+
+import yt_dlp
 
 from config import DOWNLOADS_DIR, logger
 
@@ -60,7 +61,7 @@ def check_existing_download(video_id: str, output_dir: str = DOWNLOADS_DIR) -> t
         if file.is_file() and video_id in file.name:
             if file.suffix == '.mp4' or file.suffix == '.webm':
                 video_path = str(file)
-            elif file.suffix == '.m4a' or file.suffix == '.mp3':
+            elif file.suffix == '.mp4' or file.suffix == '.mp3':
                 audio_path = str(file)
     
     # Only return if both files are found
@@ -99,53 +100,43 @@ def download_youtube_video(url: str, output_dir: str = DOWNLOADS_DIR) -> tuple[s
     # Get video title for filename (include video ID for easier identification)
     template = os.path.join(output_dir, "%(title)s-%(id)s.%(ext)s")
 
-    # Download video
+    # Download video once and extract audio from it
     logger.info(f"Downloading video from: {url}")
+    
+    video_path = None
+    audio_path = None
+    
     try:
-        # First, download the video and get info
-        cmd = [
-            "yt-dlp",
-            "--print", "filename",
-            "-o", template,
-            url
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        video_path = result.stdout.strip()
-
-        # Download video
-        cmd = [
-            "yt-dlp",
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "-o", template,
-            url
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        logger.info(f"Video downloaded to: {video_path}")
-
-        # Extract audio (update template to include video ID)
-        audio_template = template.replace(".%(ext)s", ".m4a")
-        audio_path = str(Path(video_path).with_suffix(".m4a"))
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio",
-            "-o", audio_template,
-            "--extract-audio",
-            "--audio-format", "m4a",
-            url
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-
-        # Check if audio file was created
-        if os.path.exists(audio_path):
+        # Download video with embedded audio
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': template,
+            'quiet': False,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp4',
+            }],
+            # Keep the video file after extracting audio
+            'keepvideo': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_filename = ydl.prepare_filename(info)
+            video_path = video_filename
+            # Audio path will be the same filename with .mp4 extension
+            audio_path = str(Path(video_filename).with_suffix('.mp4'))
+            
+            logger.info(f"Video downloaded to: {video_path}")
             logger.info(f"Audio extracted to: {audio_path}")
+
+        # Verify both files exist
+        if video_path and os.path.exists(video_path) and audio_path and os.path.exists(audio_path):
             return video_path, audio_path
         else:
-            logger.error(f"Failed to extract audio to: {audio_path}")
-            return video_path, None
+            logger.error(f"Failed to create video or audio file")
+            return None, None
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"yt-dlp command failed: {e.stderr}")
-        return None, None
     except Exception as e:
         logger.error(f"Error downloading video: {e}")
         return None, None
@@ -162,15 +153,14 @@ def get_video_info(url: str) -> dict | None:
         Dictionary with video info or None if failed
     """
     try:
-        cmd = [
-            "yt-dlp",
-            "--dump-json",
-            "--no-playlist",
-            url
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        import json
-        return json.loads(result.stdout)
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info
     except Exception as e:
         logger.error(f"Error getting video info: {e}")
         return None

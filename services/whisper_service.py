@@ -39,18 +39,27 @@ def transcribe_audio(
     transcript_path = os.path.join(output_dir, f"{audio_name}.txt")
 
     try:
+        import torch
         import whisperx
+
+        # Add safe globals for PyTorch 2.6+ compatibility with Pyannote VAD models
+        try:
+            from omegaconf import DictConfig, ListConfig
+            torch.serialization.add_safe_globals([DictConfig, ListConfig])
+        except ImportError:
+            pass  # OmegaConf not installed, no need to add safe globals
 
         logger.info(f"Starting transcription with model: {model}")
 
-        # Initialize whisperx
-        whisper = whisperx.load_model(
-            model=model, compute_type=compute_type, device="cuda", whisper_arch="faster-whisper"
+        # Initialize whisperx model
+        whisper_model = whisperx.load_model(
+            model, compute_type=compute_type, device="cuda"
         )
 
         # Load and transcribe audio
         logger.info(f"Loading audio file: {audio_path}")
-        result = whisper.transcribe(audio_path, batch_size=16)
+        audio = whisperx.load_audio(audio_path)
+        result = whisper_model.transcribe(audio, batch_size=16)
 
         # Get transcript text
         if "segments" in result and result["segments"]:
