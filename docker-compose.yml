@@ -1,0 +1,11 @@
+services:
+  ebook-reader:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
+      - ./transcripts:/app/transcripts
+    restart: unless-stopped
