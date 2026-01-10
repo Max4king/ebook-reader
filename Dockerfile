@@ -1,11 +1,18 @@
-# Use Python 3.13 slim image
-FROM python:3.13-slim
+# Use NVIDIA CUDA base image with Python support
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install Python 3.13 and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.13 \
+    python3.13-venv \
+    python3.13-dev \
+    python3-pip \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*

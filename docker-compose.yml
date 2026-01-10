@@ -8,4 +8,12 @@ services:
     volumes:
       - ./downloads:/app/downloads
       - ./transcripts:/app/transcripts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
+    runtime: nvidia
