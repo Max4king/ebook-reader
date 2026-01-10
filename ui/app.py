@@ -293,7 +293,7 @@ def render_youtube_downloader_tab():
 
     # Transcription formatting options
     st.subheader("Transcription Options")
-    col3, col4 = st.columns([1, 1])
+    col3, col4, col5 = st.columns([1, 1, 1])
     with col3:
         include_timestamps = st.checkbox(
             "Include Timestamps",
@@ -305,6 +305,12 @@ def render_youtube_downloader_tab():
             "Include Speaker Labels",
             value=False,
             help="Add speaker labels to the transcript (requires diarization, may increase processing time).",
+        )
+    with col5:
+        force_retranscribe = st.checkbox(
+            "Force Re-transcription",
+            value=False,
+            help="Re-transcribe the audio even if a cached transcript exists. The old transcript will be backed up.",
         )
 
     # Initialize session state for YouTube
@@ -402,6 +408,7 @@ def render_youtube_downloader_tab():
                 audio_path, whisper_model, compute_type=compute_type,
                 progress_callback=transcribe_callback,
                 include_timestamps=include_timestamps,
+                force_retranscribe=force_retranscribe,
                 include_speaker_labels=include_speaker_labels
             )
 

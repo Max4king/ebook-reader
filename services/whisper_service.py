@@ -166,7 +166,7 @@ def transcribe_audio(
         if device == "cuda":
             segments, info = batched_model.transcribe(
                 audio_path, 
-                batch_size=16,  # type: ignore
+                batch_size=4,  # type: ignore
                 word_timestamps=False,
                 vad_filter=True
             )
@@ -241,17 +241,22 @@ def transcribe_audio(
         return None, None
 
 
-# if __name__ == "__main__":
-#     # Simple test
-#     test_audio = "downloads/Rust Is Easy-CJtvnepMVAU.m4a"
-#     transcript, path = transcribe_audio(
-#         test_audio,
-#         model="small",
-#         include_timestamps=True,
-#         include_speaker_labels=False,
-#     )
-#     if transcript:
-#         print(f"Transcript saved to: {path}")
-#         print(transcript)
-#     else:
-#         print("Transcription failed.")
+if __name__ == "__main__":
+    # Simple test
+    import datetime
+    now = datetime.datetime.now()
+    test_audio = "downloads/Rust Is Easy-CJtvnepMVAU.m4a"
+    transcript, path = transcribe_audio(
+        test_audio,
+        model="small",
+        include_timestamps=True,
+        include_speaker_labels=False,
+        force_retranscribe=True,
+    )
+    if transcript:
+        print(f"Transcript saved to: {path}")
+        print(transcript)
+    else:
+        print("Transcription failed.")
+    end_time = datetime.datetime.now()
+    print(f"Transcription took: {end_time - now}")
