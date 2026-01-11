@@ -5,10 +5,10 @@ FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 WORKDIR /app
 
 # Install Python 3.13 and system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN DEBIAN_FRONTEND=noninteractive TZ=Asia/Bangkok apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive TZ=Asia/Bangkok apt-get update && apt-get install -y --no-install-recommends \
     python3.13 \
     python3.13-venv \
     python3.13-dev \
