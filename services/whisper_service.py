@@ -142,12 +142,12 @@ def transcribe_audio(
         # Model initialized
         logger.info(f"Whisper model initialized on device: {device}")
         
-        # Use batched inference pipeline for better performance
-        if device == "cuda":
-            batched_model = BatchedInferencePipeline(model=whisper_model)
-        else:
-            # For CPU, use standard model (batched pipeline requires CUDA)
-            batched_model = whisper_model
+        # # Use batched inference pipeline for better performance
+        # if device == "cuda":
+        #     batched_model = BatchedInferencePipeline(model=whisper_model)
+        # else:
+        #     # For CPU, use standard model (batched pipeline requires CUDA)
+        #     batched_model = whisper_model
         
         logger.info(f"Whisper model loaded successfully")
         
@@ -162,11 +162,10 @@ def transcribe_audio(
         logger.info("Starting transcription (this may take several minutes for longer audio)...")
         
         # Transcribe with faster-whisper
-        # Use batched transcription if available, otherwise standard
         if device == "cuda":
-            segments, info = batched_model.transcribe(
+            segments, info = whisper_model.transcribe(
                 audio_path, 
-                batch_size=4,  # type: ignore
+                # batch_size=4,  # type: ignore
                 word_timestamps=False,
                 vad_filter=True
             )

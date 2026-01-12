@@ -449,7 +449,7 @@ def render_youtube_downloader_tab():
             )
 
         # Download buttons
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.download_button(
                 "Download Transcript (TXT)",
@@ -469,6 +469,29 @@ def render_youtube_downloader_tab():
                     os.path.basename(st.session_state["yt_audio_path"]),
                     "audio/mp4",
                 )
+        with col3:
+            if st.session_state.get("yt_video_path") and os.path.exists(
+                st.session_state["yt_video_path"]
+            ):
+                with open(st.session_state["yt_video_path"], "rb") as f:
+                    video_bytes = f.read()
+                st.download_button(
+                    "Download Video (MP4)",
+                    video_bytes,
+                    os.path.basename(st.session_state["yt_video_path"]),
+                    "video/mp4",
+                )
+
+        # Video player to view cached video
+        if st.session_state.get("yt_video_path") and os.path.exists(
+            st.session_state["yt_video_path"]
+        ):
+            st.divider()
+            st.subheader("Video Preview")
+            with st.expander("View Cached Video", expanded=False):
+                with open(st.session_state["yt_video_path"], "rb") as f:
+                    video_bytes = f.read()
+                st.video(video_bytes)
 
 
 def main():
