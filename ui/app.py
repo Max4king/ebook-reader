@@ -291,22 +291,28 @@ def render_youtube_downloader_tab():
             help="Compute type for transcription. float16 is recommended for GPU.",
         )
 
-    # Transcription formatting options
-    st.subheader("Transcription Options")
-    col3, col4, col5 = st.columns([1, 1, 1])
+    # Download and Transcription options
+    st.subheader("Download & Transcription Options")
+    col3, col4, col5, col6 = st.columns([1, 1, 1, 1])
     with col3:
+        force_redownload = st.checkbox(
+            "Force Re-download",
+            value=False,
+            help="Re-download the video even if it's already cached.",
+        )
+    with col4:
         include_timestamps = st.checkbox(
             "Include Timestamps",
             value=False,
             help="Add timestamps for each audio segment in the transcript (e.g., [00:01:23.456 --> 00:01:28.789]).",
         )
-    with col4:
+    with col5:
         include_speaker_labels = st.checkbox(
             "Include Speaker Labels",
             value=False,
             help="Add speaker labels to the transcript (requires diarization, may increase processing time).",
         )
-    with col5:
+    with col6:
         force_retranscribe = st.checkbox(
             "Force Re-transcription",
             value=False,
@@ -349,21 +355,24 @@ def render_youtube_downloader_tab():
             st.caption(f"Video ID: `{video_id}`")
 
     # Helper function for downloading video
-    def handle_download(status_text, progress_bar):
+    def handle_download(status_text, progress_bar, force_redownload=False):
         """Handle video download with progress updates."""
-        if existing_video and existing_audio:
+        if existing_video and existing_audio and not force_redownload:
             status_text.info(f"Using cached download (Video ID: {video_id})")
             video_path, audio_path = existing_video, existing_audio
             progress_bar.progress(1.0)
         else:
-            status_text.info(f"Downloading video from: {youtube_url}")
+            if force_redownload:
+                status_text.info(f"Force re-downloading video from: {youtube_url}")
+            else:
+                status_text.info(f"Downloading video from: {youtube_url}")
             
             # Download with progress callback
             def download_callback(stage, prog):
                 progress_bar.progress(prog)
                 status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
             
-            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback)
+            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback, force_redownload=force_redownload)
         
         return video_path, audio_path
 
@@ -383,7 +392,7 @@ def render_youtube_downloader_tab():
         status_text = st.empty()
         progress_bar = st.progress(0)
         
-        video_path, audio_path = handle_download(status_text, progress_bar)
+        video_path, audio_path = handle_download(status_text, progress_bar, force_redownload)
 
         if video_path and audio_path:
             st.session_state["yt_video_path"] = video_path
@@ -412,17 +421,20 @@ def render_youtube_downloader_tab():
             progress_bar.progress(prog * 0.3)
             status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
         
-        if existing_video and existing_audio:
+        if existing_video and existing_audio and not force_redownload:
             status_text.info(f"Using cached download (Video ID: {video_id})")
             video_path, audio_path = existing_video, existing_audio
             progress_bar.progress(0.3)
         else:
-            status_text.info(f"Downloading video from: {youtube_url}")
+            if force_redownload:
+                status_text.info(f"Force re-downloading video from: {youtube_url}")
+            else:
+                status_text.info(f"Downloading video from: {youtube_url}")
             
             def download_callback(stage, prog):
                 download_progress_wrapper(stage, prog)
             
-            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback)
+            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback, force_redownload=force_redownload)
 
         if video_path and audio_path:
             st.session_state["yt_video_path"] = video_path

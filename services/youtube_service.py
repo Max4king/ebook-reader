@@ -126,6 +126,7 @@ def download_youtube_video(
     url: str, 
     output_dir: str = DOWNLOADS_DIR,
     progress_callback: Callable[[str, float], None] | None = None,
+    force_redownload: bool = False,
 ) -> tuple[str | None, str | None]:
     """
     Download a YouTube video and extract audio using yt-dlp.
@@ -137,6 +138,7 @@ def download_youtube_video(
         progress_callback: Optional callback(stage, progress) for progress updates.
                           Stage is one of: 'checking_cache', 'downloading', 'extracting_audio', 'done'
                           Progress is a float from 0.0 to 1.0
+        force_redownload: If True, redownload even if cached files exist
 
     Returns:
         Tuple of (video_path, audio_path) or (None, None) if failed
@@ -147,15 +149,39 @@ def download_youtube_video(
     if progress_callback:
         progress_callback('checking_cache', 0.0)
     
-    # Check if video is already downloaded
+    # Check if video is already downloaded (skip if force_redownload)
     video_id = extract_video_id(url)
-    if video_id:
+    if video_id and not force_redownload:
         existing_video, existing_audio = check_existing_download(video_id, output_dir)
         if existing_video and existing_audio:
             logger.info(f"Using cached download for video ID: {video_id}")
             if progress_callback:
                 progress_callback('done', 1.0)
             return existing_video, existing_audio
+    
+    # Delete existing files if force redownload is enabled
+    if force_redownload and video_id:
+        logger.info(f"Force redownload enabled - deleting cached files for video ID: {video_id}")
+        existing_video, existing_audio = check_existing_download(video_id, output_dir)
+        if existing_video or existing_audio:
+            # Delete video file
+            if existing_video and os.path.exists(existing_video):
+                try:
+                    os.remove(existing_video)
+                    logger.info(f"Deleted cached video: {existing_video}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete cached video: {e}")
+            
+            # Delete audio file
+            if existing_audio and os.path.exists(existing_audio):
+                try:
+                    os.remove(existing_audio)
+                    logger.info(f"Deleted cached audio: {existing_audio}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete cached audio: {e}")
+            
+            # Also clean up any intermediate files
+            cleanup_intermediate_files(video_id, output_dir)
 
     if progress_callback:
         progress_callback('downloading', 0.1)
