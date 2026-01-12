@@ -348,42 +348,79 @@ def render_youtube_downloader_tab():
         with col3:
             st.caption(f"Video ID: `{video_id}`")
 
-    # Download and transcribe button
-    if st.button("Download and Transcribe"):
-        logger.info(f"User clicked download button for URL: {youtube_url}")
-        
-        # Progress container
-        progress_container = st.container()
-        status_text = st.empty()
-        progress_bar = st.progress(0)
-        checklist_container = st.empty()
-        
-        def update_progress(phase: str, stage: str, progress: float):
-            """Update progress display."""
-            st.session_state["yt_progress_stage"] = stage
-            st.session_state["yt_progress_value"] = progress
-            progress_bar.progress(progress)
-            
-            if phase == 'download':
-                status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
-            else:
-                status_text.markdown(f"**{TRANSCRIBE_STAGES.get(stage, stage)}**")
-        
-        # Download phase
-        update_progress('download', 'checking_cache', 0.0)
-        
+    # Helper function for downloading video
+    def handle_download(status_text, progress_bar):
+        """Handle video download with progress updates."""
         if existing_video and existing_audio:
             status_text.info(f"Using cached download (Video ID: {video_id})")
             video_path, audio_path = existing_video, existing_audio
-            update_progress('download', 'done', 0.3)
+            progress_bar.progress(1.0)
         else:
             status_text.info(f"Downloading video from: {youtube_url}")
             
             # Download with progress callback
             def download_callback(stage, prog):
-                # Map download progress to 0-30%
-                mapped_prog = prog * 0.3
-                update_progress('download', stage, mapped_prog)
+                progress_bar.progress(prog)
+                status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
+            
+            video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback)
+        
+        return video_path, audio_path
+
+    # Create two columns for the buttons
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        download_only_clicked = st.button("📥 Download Only", use_container_width=True, help="Download video without transcribing")
+    
+    with btn_col2:
+        download_and_transcribe_clicked = st.button("📥📝 Download and Transcribe", use_container_width=True, help="Download and transcribe the video")
+
+    # Handle Download Only button
+    if download_only_clicked:
+        logger.info(f"User clicked download only button for URL: {youtube_url}")
+        
+        status_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        video_path, audio_path = handle_download(status_text, progress_bar)
+
+        if video_path and audio_path:
+            st.session_state["yt_video_path"] = video_path
+            st.session_state["yt_audio_path"] = audio_path
+            
+            # Show video info
+            title = get_title_from_filename(video_path)
+            if title:
+                st.caption(f"Title: {title}")
+            
+            status_text.success("✅ Download completed!")
+            st.rerun()
+        else:
+            st.error("Failed to download video. Please check the URL and try again.")
+
+    # Handle Download and Transcribe button
+    if download_and_transcribe_clicked:
+        logger.info(f"User clicked download and transcribe button for URL: {youtube_url}")
+        
+        status_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        # Download phase (0-30%)
+        def download_progress_wrapper(stage, prog):
+            """Wrap download progress to 0-30% range."""
+            progress_bar.progress(prog * 0.3)
+            status_text.markdown(f"**{DOWNLOAD_STAGES.get(stage, stage)}**")
+        
+        if existing_video and existing_audio:
+            status_text.info(f"Using cached download (Video ID: {video_id})")
+            video_path, audio_path = existing_video, existing_audio
+            progress_bar.progress(0.3)
+        else:
+            status_text.info(f"Downloading video from: {youtube_url}")
+            
+            def download_callback(stage, prog):
+                download_progress_wrapper(stage, prog)
             
             video_path, audio_path = download_youtube_video(youtube_url, progress_callback=download_callback)
 
@@ -391,18 +428,19 @@ def render_youtube_downloader_tab():
             st.session_state["yt_video_path"] = video_path
             st.session_state["yt_audio_path"] = audio_path
             
-            # Show video info - extract title from cached filename to avoid network request
+            # Show video info
             title = get_title_from_filename(video_path)
             if title:
                 st.caption(f"Title: {title}")
 
-            # Transcription phase
+            # Transcription phase (30-100%)
             logger.info(f"Starting transcription with model: {whisper_model}")
             
             def transcribe_callback(stage, prog):
                 # Map transcription progress to 30-100%
                 mapped_prog = 0.3 + (prog * 0.7)
-                update_progress('transcribe', stage, mapped_prog)
+                progress_bar.progress(mapped_prog)
+                status_text.markdown(f"**{TRANSCRIBE_STAGES.get(stage, stage)}**")
             
             transcript, transcript_path = transcribe_audio(
                 audio_path, whisper_model, compute_type=compute_type,
@@ -423,72 +461,88 @@ def render_youtube_downloader_tab():
         else:
             st.error("Failed to download video. Please check the URL and try again.")
 
-    # Show results
-    if st.session_state.get("yt_transcript"):
+    # Show results - Download buttons and video preview (available after any download)
+    if st.session_state.get("yt_video_path") or st.session_state.get("yt_audio_path"):
         st.divider()
-        st.subheader("Transcript")
+        
+        # Show transcript if available
+        if st.session_state.get("yt_transcript"):
+            st.subheader("Transcript")
 
-        # Show transcript stats
-        transcript_len = len(st.session_state["yt_transcript"])
-        word_count = len(st.session_state["yt_transcript"].split())
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Characters", f"{transcript_len:,}")
-        with col2:
-            st.metric("Words", f"{word_count:,}")
-        with col3:
-            st.metric("Model", whisper_model)
+            # Show transcript stats
+            transcript_len = len(st.session_state["yt_transcript"])
+            word_count = len(st.session_state["yt_transcript"].split())
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Characters", f"{transcript_len:,}")
+            with col2:
+                st.metric("Words", f"{word_count:,}")
+            with col3:
+                st.metric("Model", whisper_model)
 
-        # Show transcript in expandable section
-        with st.expander("View Transcript", expanded=True):
-            st.text_area(
-                "Transcript",
-                st.session_state["yt_transcript"],
-                height=300,
-                label_visibility="collapsed",
-            )
+            # Show transcript in expandable section
+            with st.expander("View Transcript", expanded=True):
+                st.text_area(
+                    "Transcript",
+                    st.session_state["yt_transcript"],
+                    height=300,
+                    label_visibility="collapsed",
+                )
 
-        # Download buttons
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.download_button(
-                "Download Transcript (TXT)",
-                st.session_state["yt_transcript"],
-                "transcript.txt",
-                "text/plain",
-            )
-        with col2:
-            if st.session_state.get("yt_audio_path") and os.path.exists(
-                st.session_state["yt_audio_path"]
-            ):
+        # Download buttons section
+        st.subheader("Downloads")
+        
+        # Determine number of columns based on what's available
+        has_transcript = st.session_state.get("yt_transcript") is not None
+        has_audio = st.session_state.get("yt_audio_path") and os.path.exists(st.session_state["yt_audio_path"])
+        has_video = st.session_state.get("yt_video_path") and os.path.exists(st.session_state["yt_video_path"])
+        
+        num_cols = sum([1 for x in [has_transcript, has_audio, has_video] if x])
+        cols = st.columns(num_cols) if num_cols > 0 else [st.container()]
+        
+        col_idx = 0
+        
+        if has_transcript:
+            with cols[col_idx]:
+                st.download_button(
+                    "📄 Download Transcript (TXT)",
+                    st.session_state["yt_transcript"],
+                    "transcript.txt",
+                    "text/plain",
+                    use_container_width=True,
+                )
+            col_idx += 1
+        
+        if has_audio:
+            with cols[col_idx]:
                 with open(st.session_state["yt_audio_path"], "rb") as f:
                     audio_bytes = f.read()
                 st.download_button(
-                    "Download Audio (M4A)",
+                    "🎵 Download Audio (M4A)",
                     audio_bytes,
                     os.path.basename(st.session_state["yt_audio_path"]),
                     "audio/mp4",
+                    use_container_width=True,
                 )
-        with col3:
-            if st.session_state.get("yt_video_path") and os.path.exists(
-                st.session_state["yt_video_path"]
-            ):
+            col_idx += 1
+        
+        if has_video:
+            with cols[col_idx]:
                 with open(st.session_state["yt_video_path"], "rb") as f:
                     video_bytes = f.read()
                 st.download_button(
-                    "Download Video (MP4)",
+                    "🎬 Download Video (MP4)",
                     video_bytes,
                     os.path.basename(st.session_state["yt_video_path"]),
                     "video/mp4",
+                    use_container_width=True,
                 )
 
         # Video player to view cached video
-        if st.session_state.get("yt_video_path") and os.path.exists(
-            st.session_state["yt_video_path"]
-        ):
+        if has_video:
             st.divider()
             st.subheader("Video Preview")
-            with st.expander("View Cached Video", expanded=False):
+            with st.expander("View Video", expanded=False):
                 with open(st.session_state["yt_video_path"], "rb") as f:
                     video_bytes = f.read()
                 st.video(video_bytes)

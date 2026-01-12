@@ -182,11 +182,12 @@ def download_youtube_video(
             progress_callback('extracting_audio', 0.8)
     
     try:
-        # Download video with embedded audio using merge format to avoid multiple files
-        # Use a single format that already has audio+video, or download best and merge
+        # Download highest quality video and audio, then merge
+        # YouTube's best quality is usually separate streams that need merging
         ydl_opts = {
-            # Use mp4 format with audio included, or merge best video+audio into mp4
-            'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+            # Download best video + best audio and merge (prioritizes quality over format)
+            # Falls back to best single file if merging fails
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
             'outtmpl': template,
             'quiet': True,
             'no_warnings': True,
